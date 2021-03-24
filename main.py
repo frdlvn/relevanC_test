@@ -1,5 +1,6 @@
 from pyspark.sql import SparkSession
 from pyspark.sql.dataframe import DataFrame
+from pyspark.sql.window import Window
 import pyspark.sql.functions as F
 
 import seaborn as sns
@@ -33,7 +34,7 @@ df.printSchema()
 
 #---------Top 50 stores-----------#
 top_50_stores_df: DataFrame = (df.select("code_magasin", "prix")
-                                 .groupBy("code_magasin").agg(sum("prix").alias("ca"))
+                                 .groupBy("code_magasin").agg(F.sum("prix").alias("ca"))
                                  .orderBy("ca", ascending=False)
                                  .limit(50)
 )
@@ -51,31 +52,41 @@ sns_plot.get_figure().savefig("top-50-stores/top-50-stores.png")
 plt.close()
 
 #---------Top 100 products-----------#
-# Get list of unique store ids
-code_magasin_list = df.select("code_magasin").distinct().collect()
-
 
 # For each store, calculate the top 100
-for magasin in code_magasin_list:
-    top_100_products_df = (df.filter(F.col("code_magasin") == magasin[0])
-                             .select("identifiant_produit", "prix")
-                             .groupBy("identifiant_produit")
-                             .agg({'identifiant_produit': 'count', 'prix': 'sum'})
-                             .withColumnRenamed("sum(prix)", "ca")
-                             .withColumn("code_magasin", F.lit(magasin[0]))
-                             .orderBy("count(identifiant_produit)", ascending=False)
-                             .select("code_magasin", "identifiant_produit", "ca")
-                             .limit(100)
-    )
-    # Write dataframe to CSV file
-    top_100_products_df.write.save(f"relevanC/top-products-by-store/top-100-products-store-{magasin[0]}", header="true", format="csv", mode="overwrite", sep="|")
+grouped_df = (df.groupBy("code_magasin", "identifiant_produit")
+                .agg({'identifiant_produit': 'count', 'prix': 'sum'})
+                .withColumnRenamed("sum(prix)", "ca")
+                .withColumnRenamed("count(identifiant_produit)", "nb_ventes_produit")
+                .orderBy("identifiant_produit", "nb_ventes_produit", ascending=False)
+)
 
-    # Visual of the KPI
-    f, ax = plt.subplots(figsize=((12, 15)))
-    sns.set_color_codes("pastel")
-    sns_plot = sns.barplot(x="ca", y="code_magasin", data=top_100_products_df.toPandas(), color="b")
-    ax.set(ylabel="", xlabel="Chiffre d'affaire", title="Classement des 50 produits les plus populaires, par chiffre d'affaire")
-    sns_plot.get_figure().savefig(f"relevanC/top-products-by-store/top-100-products-store-{magasin[0]}/top-100-products-store-{magasin[0]}.png")
-    plt.close()
+# Create window to rank the products of each store
+window = Window.partitionBy([F.col('code_magasin'), F.col('identifiant_produit')]
+                            ).orderBy(grouped_df['nb_ventes_produit'].desc())
 
+ordered_df = (grouped_df.select('*', F.rank().over(window).alias('rank')) 
+                        .filter(F.col('rank') <= 100)
+                        .select("code_magasin", "identifiant_produit", "ca")
+)
+
+ordered_df.write.save("top-100-products-by-store",
+                      header="true",
+                      format="csv",
+                      mode="overwrite",
+                      sep="|",
+                      partitionBy="code_magasin")
+
+
+"""
+# Visual of the KPI
+f, ax = plt.subplots(figsize=((12, 15)))
+sns.set_color_codes("pastel")
+sns_plot = sns.barplot(x="ca", y="code_magasin", data=top_100_products_df.toPandas(), color="b")
+ax.set(ylabel="", xlabel="Chiffre d'affaire",
+        title="Classement des 50 produits les plus populaires, par chiffre d'affaire")
+sns_plot.get_figure().savefig(f"relevanC/top-products-by-store/top-100-products-store-{magasin[0]}/"
+                                f"top-100-products-store-{magasin[0]}.png")
+plt.close()
+"""
 print(f"--- Time taken to run the script: {time.time() - start_time} ---")

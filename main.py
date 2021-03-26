@@ -6,16 +6,20 @@ import pyspark.sql.functions as F
 import seaborn as sns
 import matplotlib.pyplot as plt
 
+import logging
 import time
 
+logging.basicConfig(level=logging.INFO)
+logging.info("Starting script")
 
 start_time = time.time()
 
 # Launch and configure Spark
 spark = (SparkSession
     .builder
+    .master("local[*]")
     .appName("relevanC test")
-    #.config("spark.driver.memory", "17g")
+    .config("spark.driver.memory", "10g")
     .getOrCreate()
 )
 
@@ -25,7 +29,7 @@ raw_df = spark.read.option("header", "true").option("sep", "|").csv("randomized-
 # Adjust date and float types (default is string)
 df = (raw_df.withColumn("date_encaissement", F.to_date(F.col("date_encaissement")))
             .withColumn("prix", F.col("prix").cast("float"))
-            .limit(10000)  # for tests only
+            #.limit(10000)  # for tests only
             .cache()
 )
 
@@ -33,6 +37,8 @@ df.show(10)
 df.printSchema()
 
 #---------Top 50 stores-----------#
+logging.info("Calculating top 50 stores by CA")
+
 top_50_stores_df: DataFrame = (df.select("code_magasin", "prix")
                                  .groupBy("code_magasin").agg(F.sum("prix").alias("ca"))
                                  .orderBy("ca", ascending=False)
@@ -52,6 +58,7 @@ sns_plot.get_figure().savefig("top-50-stores/top-50-stores.png")
 plt.close()
 
 #---------Top 100 products-----------#
+logging.info("Calculating the top 100 products for each store")
 
 # For each store, calculate the top 100
 grouped_df = (df.groupBy("code_magasin", "identifiant_produit")
@@ -70,14 +77,17 @@ ordered_df = (grouped_df.select('*', F.rank().over(window).alias('rank'))
                         .select("code_magasin", "identifiant_produit", "ca")
 )
 
-ordered_df.write.save("top-100-products-by-store",
-                      header="true",
-                      format="csv",
-                      mode="overwrite",
-                      sep="|",
-                      partitionBy="code_magasin")
+logging.info("Writing top 100 CSVs on disk")
+ordered_df.repartition(1).write.save("top-100-products-by-store",
+                                  header="true",
+                                  format="csv",
+                                  mode="overwrite",
+                                  sep="|",
+                                  partitionBy="code_magasin")
 
+logging.info("Writing done, exiting Pyspark")
 
+spark.stop()
 """
 # Visual of the KPI
 f, ax = plt.subplots(figsize=((12, 15)))
@@ -89,4 +99,5 @@ sns_plot.get_figure().savefig(f"relevanC/top-products-by-store/top-100-products-
                                 f"top-100-products-store-{magasin[0]}.png")
 plt.close()
 """
-print(f"--- Time taken to run the script: {time.time() - start_time} ---")
+logging.info(f"--- Time taken to run the script: {time.time() - start_time} ---")
+
